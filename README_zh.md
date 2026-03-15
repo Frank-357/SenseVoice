@@ -380,6 +380,71 @@ sensevoice2jsonl \
 bash finetune.sh
 ```
 
+## 本地快捷键语音转录工具（macOS）
+
+通过全局快捷键触发麦克风录音，转录结果直接粘贴到当前光标所在的输入框，全程本地推理，无需云服务。
+
+### 系统要求
+
+- macOS（Apple Silicon 或 Intel）
+- Python 3.10+
+- Homebrew
+
+### 第一步：安装系统依赖
+
+```shell
+brew install portaudio
+```
+
+### 第二步：进入项目目录并创建虚拟环境
+
+```shell
+cd /path/to/SenseVoice
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+### 第三步：安装依赖
+
+```shell
+pip install --upgrade pip
+pip install -r requirements.txt
+pip install -r requirements_mic.txt
+```
+
+### 第四步：下载模型（约 230MB，仅需执行一次）
+
+```shell
+python download_model.py
+```
+
+### 第五步：授予「输入监控」权限
+
+首次运行时 macOS 会弹出权限请求。在以下位置手动开启后，**重新运行脚本**：
+
+> 系统设置 → 隐私与安全性 → 输入监控 → 勾选 Terminal.app
+
+### 第六步：启动守护进程
+
+```shell
+python hotkey_daemon.py
+```
+
+看到 `SenseVoice Hotkey Daemon — 已就绪` 即可开始使用。
+
+### 使用方式
+
+快捷键：**Left Cmd + Left Opt**（键盘左侧，同时按下）
+
+| 模式 | 操作 | 提示音 |
+|------|------|--------|
+| 长按录音 | 按住两键 → 说话 → 松开任意键 | Pop |
+| 持久录音 | 0.4s 内双击两键 → 说话 → 再次双击 | Tink |
+
+转录完成后文字自动粘贴到当前光标位置（通过剪贴板，兼容中文输入法）。
+
+> 注：录音期间 macOS 菜单栏会显示橙色麦克风标志，停止录音后立即消失。
+
 ## WebUI
 
 ```shell

@@ -384,6 +384,73 @@ python webui.py
 
 <div align="center"><img src="image/webui.png" width="700"/> </div>
 
+## Local Hotkey Transcription Tool (macOS)
+
+A global hotkey daemon that records from the microphone and pastes the transcript directly into the active input field. Fully local inference — no cloud required.
+
+### Requirements
+
+- macOS (Apple Silicon or Intel)
+- Python 3.10+
+- Homebrew
+
+### Step 1: Install system dependency
+
+```shell
+brew install portaudio
+```
+
+### Step 2: Enter the project directory and create a virtual environment
+
+```shell
+cd /path/to/SenseVoice
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+### Step 3: Install Python dependencies
+
+```shell
+pip install --upgrade pip
+pip install -r requirements.txt
+pip install -r requirements_mic.txt
+```
+
+### Step 4: Download the model (approx. 230 MB, one-time only)
+
+```shell
+python download_model.py
+```
+
+### Step 5: Grant Input Monitoring permission
+
+On first run, macOS will prompt for permission. Enable it at:
+
+> System Settings → Privacy & Security → Input Monitoring → enable Terminal.app
+
+Then **restart the script**.
+
+### Step 6: Start the daemon
+
+```shell
+python hotkey_daemon.py
+```
+
+You'll see `SenseVoice Hotkey Daemon — ready` when it's running.
+
+### Usage
+
+Hotkey: **Left Cmd + Left Opt** (left side of keyboard, press simultaneously)
+
+| Mode | Action | Sound |
+|------|--------|-------|
+| Hold-to-record | Hold both keys → speak → release either key | Pop |
+| Persistent record | Double-tap both keys within 0.4s → speak → double-tap again | Tink |
+
+The transcript is pasted at the current cursor position via the clipboard (compatible with all input methods).
+
+> The macOS orange mic indicator appears only while recording and disappears immediately when done.
+
 
 ## Remarkable Third-Party Work
 - Triton (GPU) Deployment Best Practices: Using Triton + TensorRT, tested with FP32, achieving an acceleration ratio of 526 on V100 GPU. FP16 support is in progress. [Repository](https://github.com/modelscope/FunASR/blob/main/runtime/triton_gpu/README.md)
