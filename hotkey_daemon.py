@@ -122,24 +122,38 @@ def _select_device() -> str:
 
 # ── 录音 ──────────────────────────────────────────────────────────────────────
 
+_stream: sd.InputStream | None = None
+
+
 def _audio_callback(indata: np.ndarray, frames: int, time_info, status) -> None:
     """sounddevice InputStream 回调，将帧追加到缓冲区。"""
     with _rec_lock:
-        if _recording:
-            _audio_buffer.append(indata[:, 0].copy())
+        _audio_buffer.append(indata[:, 0].copy())
 
 
 def _begin_recording() -> None:
-    global _recording, _audio_buffer
+    """开启麦克风流（此时 macOS 才显示橙点）。"""
+    global _stream, _audio_buffer
     with _rec_lock:
         _audio_buffer = []
-        _recording = True
+    _stream = sd.InputStream(
+        samplerate=SAMPLE_RATE,
+        channels=1,
+        dtype="float32",
+        callback=_audio_callback,
+        blocksize=1024,
+    )
+    _stream.start()
 
 
 def _stop_recording() -> np.ndarray:
-    global _recording
+    """关闭麦克风流（橙点立刻消失）并返回录音数据。"""
+    global _stream
+    if _stream is not None:
+        _stream.stop()
+        _stream.close()
+        _stream = None
     with _rec_lock:
-        _recording = False
         if _audio_buffer:
             return np.concatenate(_audio_buffer)
     return np.zeros(SAMPLE_RATE, dtype=np.float32)
@@ -352,16 +366,6 @@ def main() -> None:
     _model.eval()
     print("Model loaded.\n")
 
-    # 开启常驻音频流（零延迟录音）
-    stream = sd.InputStream(
-        samplerate=SAMPLE_RATE,
-        channels=1,
-        dtype="float32",
-        callback=_audio_callback,
-        blocksize=1024,
-    )
-    stream.start()
-
     _notify("SenseVoice 已就绪 (Left Cmd + Left Opt)")
     print("=" * 55)
     print("SenseVoice Hotkey Daemon — 已就绪")
@@ -378,8 +382,9 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
 
-    stream.stop()
-    stream.close()
+    if _stream is not None:
+        _stream.stop()
+        _stream.close()
     print("\nDaemon stopped.")
 
 
