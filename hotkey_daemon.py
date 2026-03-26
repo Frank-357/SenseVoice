@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""SenseVoice 全局快捷键语音转录守护进程。
+"""全局快捷键语音转录守护进程。
 
 快捷键：Left Cmd + Left Opt（同时按）
 
@@ -8,30 +8,37 @@
   双击模式：0.4s 内两次同时按下（听到 Tink 音）→ 说话 → 再次双击 → 转录 → 文字打入光标处
 
 启动：
-    python hotkey_daemon.py
+    python3 hotkey_daemon.py
+    python3 hotkey_daemon.py --model FunAudioLLM/Fun-ASR-Nano-2512 --language zh --hotwords "开放时间,菜单"
 
 macOS 权限：首次运行会弹出"输入监控"权限请求，在
     系统设置 → 隐私与安全性 → 输入监控 中允许 Terminal，然后重启脚本。
 """
 
+import argparse
+import os
 import subprocess
 import sys
 import threading
 import time
 
 import numpy as np
-import sounddevice as sd
-import torch
-from pynput import keyboard
-from pynput.keyboard import Controller as KeyboardController
-from pynput.keyboard import Key
+
+from model_adapter import build_auto_model, generate_text, select_device_for_model
 
 # ── 配置区（可直接修改）────────────────────────────────────────────────────────
 
-MODEL_DIR = "iic/SenseVoiceSmall"
-# MODEL_DIR = "iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch"
+MODEL_DIR = os.getenv("SENSEVOICE_MODEL", "FunAudioLLM/Fun-ASR-Nano-2512")
+LANGUAGE = os.getenv("SENSEVOICE_LANGUAGE", "zh")
+HOTWORDS = os.getenv("SENSEVOICE_HOTWORDS", "")
+DEVICE = os.getenv("SENSEVOICE_DEVICE", "")
 
-LANGUAGE = "auto"          # SenseVoice: "auto"/"zh"/"en"/"ja"  Paraformer: "zh"
+# 可选模型：
+#   iic/SenseVoiceSmall
+#   FunAudioLLM/Fun-ASR-Nano-2512
+# 可选语言：
+#   SenseVoice: auto/zh/en/yue/ja/ko/nospeech
+#   Fun-ASR-Nano: auto/zh/en/ja（内部会映射为 中文/英文/日文）
 
 DOUBLE_CLICK_THRESHOLD = 0.4   # 秒：两次组合键间隔 < 此值视为双击
 HOLD_THRESHOLD = 0.15          # 秒：按下后持续此时间视为长按（而非单击）
@@ -62,11 +69,16 @@ _audio_buffer: list[np.ndarray] = []
 
 # ── 模型（主线程加载后只读）──────────────────────────────────────────────────
 _model = None
-_model_kwargs: dict = {}
-_keyboard_ctrl = KeyboardController()
+keyboard = None
+KeyboardController = None
+Key = None
+_keyboard_ctrl = None
+
+# ── 浮动窗口（主线程初始化，可能为 None）──────────────────────────────────────
+_widget = None
 
 # ── 触发键集合────────────────────────────────────────────────────────────────
-TRIGGER_KEYS: set = {Key.cmd_l, Key.alt_l}
+TRIGGER_KEYS: set = set()
 
 
 # ── 工具函数 ──────────────────────────────────────────────────────────────────
@@ -74,7 +86,7 @@ TRIGGER_KEYS: set = {Key.cmd_l, Key.alt_l}
 def _notify(message: str) -> None:
     """macOS 通知（非阻塞）。"""
     subprocess.Popen(
-        ["osascript", "-e", f'display notification "{message}" with title "SenseVoice"'],
+        ["osascript", "-e", f'display notification "{message}" with title "Paraformer"'],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -112,28 +124,60 @@ def _paste_text(text: str) -> None:
     subprocess.run(["pbcopy"], input=backup, check=True)
 
 
-def _select_device() -> str:
-    if torch.backends.mps.is_available():
-        return "mps"
-    if torch.cuda.is_available():
-        return "cuda"
-    return "cpu"
+def _load_pynput() -> None:
+    global keyboard, KeyboardController, Key, _keyboard_ctrl, TRIGGER_KEYS
+
+    if keyboard is not None:
+        return
+
+    from pynput import keyboard as keyboard_module
+    from pynput.keyboard import Controller as keyboard_controller
+    from pynput.keyboard import Key as key_class
+
+    keyboard = keyboard_module
+    KeyboardController = keyboard_controller
+    Key = key_class
+    _keyboard_ctrl = KeyboardController()
+    TRIGGER_KEYS = {Key.cmd_l, Key.alt_l}
+
+
+def _select_device(model_id: str, preferred_device: str | None = None) -> str:
+    return select_device_for_model(model_id, preferred_device)
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="全局快捷键语音转录守护进程")
+    parser.add_argument("--model", default=MODEL_DIR, help="模型 ID")
+    parser.add_argument("--language", default=LANGUAGE, help="识别语言提示，默认 auto")
+    parser.add_argument(
+        "--hotwords",
+        default=HOTWORDS,
+        help="逗号分隔的热词列表，仅 Fun-ASR-Nano 生效",
+    )
+    parser.add_argument("--device", default=DEVICE, help="推理设备：auto/cpu/mps/cuda")
+    parser.add_argument("--type-delay", type=float, default=TYPE_DELAY, help="粘贴前延迟（秒）")
+    return parser.parse_args()
 
 
 # ── 录音 ──────────────────────────────────────────────────────────────────────
 
-_stream: sd.InputStream | None = None
+_stream = None
 
 
 def _audio_callback(indata: np.ndarray, frames: int, time_info, status) -> None:
     """sounddevice InputStream 回调，将帧追加到缓冲区。"""
+    chunk = indata[:, 0].copy()
     with _rec_lock:
-        _audio_buffer.append(indata[:, 0].copy())
+        _audio_buffer.append(chunk)
+    if _widget:
+        _widget.push_audio_rms(float(np.sqrt(np.mean(chunk ** 2))))
 
 
 def _begin_recording() -> None:
     """开启麦克风流（此时 macOS 才显示橙点）。"""
     global _stream, _audio_buffer
+    import sounddevice as sd
+
     with _rec_lock:
         _audio_buffer = []
     _stream = sd.InputStream(
@@ -165,17 +209,7 @@ def _transcribe_and_type(audio_np: np.ndarray) -> None:
     """在独立线程中运行推理，完成后打字，最后将状态重置为 IDLE。"""
     global _state
     try:
-        from funasr.utils.postprocess_utils import rich_transcription_postprocess
-
-        res = _model.inference(
-            data_in=audio_np,
-            language=LANGUAGE,
-            use_itn=True,
-            ban_emo_unk=False,
-            fs=SAMPLE_RATE,
-            **_model_kwargs,
-        )
-        text = rich_transcription_postprocess(res[0][0]["text"])
+        text = generate_text(_model, MODEL_DIR, audio_np, LANGUAGE, HOTWORDS)
 
         if text.strip():
             _paste_text(text)
@@ -191,6 +225,8 @@ def _transcribe_and_type(audio_np: np.ndarray) -> None:
     finally:
         with _state_lock:
             _state = IDLE
+        if _widget:
+            _widget.set_state(IDLE)
 
 
 # ── 定时器回调 ────────────────────────────────────────────────────────────────
@@ -213,6 +249,8 @@ def _hold_threshold_reached() -> None:
     _begin_recording()
     _play("Pop")
     _notify("录音中（松开停止）...")
+    if _widget:
+        _widget.set_state(HOLD_RECORDING)
     print("[state] HOLD_RECORDING")
 
 
@@ -276,10 +314,14 @@ def _on_combo_pressed() -> None:
         _begin_recording()
         _play("Tink")
         _notify("持久录音中（再次双击停止）...")
+        if _widget:
+            _widget.set_state(PERSISTENT_RECORDING)
         print("[state] PERSISTENT_RECORDING")
     elif action == "stop_and_transcribe":
         audio = _stop_recording()
         _notify("转录中...")
+        if _widget:
+            _widget.set_state(TRANSCRIBING)
         print("[state] TRANSCRIBING")
         t = threading.Thread(target=_transcribe_and_type, args=(audio,), daemon=True)
         t.start()
@@ -306,6 +348,8 @@ def _on_trigger_key_released() -> None:
     if action == "stop_and_transcribe":
         audio = _stop_recording()
         _notify("转录中...")
+        if _widget:
+            _widget.set_state(TRANSCRIBING)
         print("[state] TRANSCRIBING")
         t = threading.Thread(target=_transcribe_and_type, args=(audio,), daemon=True)
         t.start()
@@ -352,23 +396,78 @@ def on_release(key) -> None:
         print(f"[warn] on_release error (ignored): {e}", file=sys.stderr)
 
 
+# ── 悬浮窗按钮回调 ────────────────────────────────────────────────────────────
+
+def _cancel_persistent_recording() -> None:
+    """悬浮窗 X 按钮：取消持久录音，丢弃音频。"""
+    global _state
+    with _state_lock:
+        if _state != PERSISTENT_RECORDING:
+            return
+        _state = IDLE
+    _stop_recording()  # 丢弃音频
+    _play("Funk", volume=0.15)
+    if _widget:
+        _widget.set_state(IDLE)
+    print("[state] IDLE (cancelled)")
+
+
+def _stop_persistent_recording() -> None:
+    """悬浮窗 Stop 按钮：停止持久录音，开始转录。"""
+    global _state
+    with _state_lock:
+        if _state != PERSISTENT_RECORDING:
+            return
+        _state = TRANSCRIBING
+    audio = _stop_recording()
+    _notify("转录中...")
+    if _widget:
+        _widget.set_state(TRANSCRIBING)
+    print("[state] TRANSCRIBING")
+    t = threading.Thread(target=_transcribe_and_type, args=(audio,), daemon=True)
+    t.start()
+
+
 # ── 主程序 ────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    global _model, _model_kwargs
+    global _model, _widget, MODEL_DIR, LANGUAGE, HOTWORDS, TYPE_DELAY, DEVICE
 
-    device = _select_device()
+    args = _parse_args()
+    MODEL_DIR = args.model
+    LANGUAGE = args.language
+    HOTWORDS = args.hotwords
+    DEVICE = args.device
+    TYPE_DELAY = args.type_delay
+
+    _load_pynput()
+    preferred_device = None if DEVICE in {"", "auto"} else DEVICE
+    device = _select_device(MODEL_DIR, preferred_device)
     print(f"Loading {MODEL_DIR} on {device} ...")
 
-    from model import SenseVoiceSmall
-
-    _model, _model_kwargs = SenseVoiceSmall.from_pretrained(model=MODEL_DIR, device=device)
-    _model.eval()
+    _model = build_auto_model(MODEL_DIR, device=device, disable_update=True)
     print("Model loaded.\n")
 
-    _notify("SenseVoice 已就绪 (Left Cmd + Left Opt)")
+    # 初始化悬浮窗（失败则回退到纯通知模式）
+    try:
+        from overlay_widget import OverlayWidget
+        _widget = OverlayWidget(
+            on_cancel=_cancel_persistent_recording,
+            on_stop=_stop_persistent_recording,
+        )
+        print("[overlay] Widget initialized")
+    except Exception as exc:
+        _widget = None
+        print(f"[overlay] Failed to init widget, notification-only mode: {exc}")
+
+    _notify("Paraformer 已就绪 (Left Cmd + Left Opt)")
     print("=" * 55)
-    print("SenseVoice Hotkey Daemon — 已就绪")
+    print("Paraformer Hotkey Daemon — 已就绪")
+    print(f"  模型：{MODEL_DIR}")
+    print(f"  设备：{device}")
+    print(f"  语言：{LANGUAGE}")
+    if HOTWORDS.strip():
+        print(f"  热词：{HOTWORDS}")
     print("  长按模式：同时按住 Left Cmd + Left Opt（Pop 音）")
     print("            → 说话 → 松开任意键 → 文字自动打入")
     print("  双击模式：0.4s 内双击 Left Cmd + Left Opt（Tink 音）")
@@ -376,12 +475,23 @@ def main() -> None:
     print("按 Ctrl+C 退出")
     print("=" * 55)
 
+    # pynput listener 作为守护线程运行
+    listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+    listener.daemon = True
+    listener.start()
+
     try:
-        with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
+        if _widget:
+            # 主线程运行 tkinter mainloop
+            _widget.run()
+        else:
+            # 无窗口模式：主线程等待 listener
             listener.join()
     except KeyboardInterrupt:
         pass
 
+    if _widget:
+        _widget.stop()
     if _stream is not None:
         _stream.stop()
         _stream.close()

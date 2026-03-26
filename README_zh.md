@@ -99,6 +99,47 @@ SenseVoice-small 模型采用非自回归端到端架构，推理延迟极低。
 pip install -r requirements.txt
 ```
 
+如果你要运行 [hotkey_daemon.py](./hotkey_daemon.py) 或 [transcribe_mic.py](./transcribe_mic.py)，还需要安装麦克风和热键依赖：
+
+```shell
+pip install -r requirements_mic.txt
+```
+
+## 模型切换与运行配置
+
+当前仓库已经同时适配了以下模型：
+
+- `iic/SenseVoiceSmall`
+- `FunAudioLLM/Fun-ASR-Nano-2512`
+
+推荐用命令行参数或环境变量切换模型，而不是直接改源码。
+
+```shell
+# SenseVoice
+python3 hotkey_daemon.py --model iic/SenseVoiceSmall --language auto
+
+# Fun-ASR-Nano
+python3 hotkey_daemon.py --model FunAudioLLM/Fun-ASR-Nano-2512 --language zh --hotwords "开放时间,菜单"
+
+# 也可以用环境变量长期固定
+export SENSEVOICE_MODEL=FunAudioLLM/Fun-ASR-Nano-2512
+export SENSEVOICE_LANGUAGE=zh
+export SENSEVOICE_HOTWORDS="开放时间,菜单"
+export SENSEVOICE_DEVICE=cpu
+python3 hotkey_daemon.py
+```
+
+说明：
+
+- `--language auto` 会沿用默认行为。对于 `Fun-ASR-Nano`，适配层会把 `zh/en/ja` 自动映射为 `中文/英文/日文`。
+- `--hotwords` 目前只对 `Fun-ASR-Nano` 生效，`SenseVoiceSmall` 会忽略这个参数。
+- `--device` 支持 `auto/cpu/mps/cuda`。当前在 macOS 上，`Fun-ASR-Nano` 默认会优先走 `cpu`，因为这条链路下通常比 `mps` 更快；如果你要手动覆盖，也可以直接传 `--device mps`。
+- 单次录音脚本也支持同样的配置方式：
+
+```shell
+python3 transcribe_mic.py --duration 10 --model FunAudioLLM/Fun-ASR-Nano-2512 --language zh --hotwords "开放时间,菜单" --device cpu
+```
+
 <a name="用法教程"></a>
 
 # 用法 🛠️

@@ -97,6 +97,47 @@ The SenseVoice-Small model deploys a non-autoregressive end-to-end architecture,
 pip install -r requirements.txt
 ```
 
+If you want to run [hotkey_daemon.py](./hotkey_daemon.py) or [transcribe_mic.py](./transcribe_mic.py), also install the microphone and hotkey dependencies:
+
+```shell
+pip install -r requirements_mic.txt
+```
+
+## Model Switching And Runtime Config
+
+This repository now supports both of these models:
+
+- `iic/SenseVoiceSmall`
+- `FunAudioLLM/Fun-ASR-Nano-2512`
+
+Prefer switching models with CLI flags or environment variables instead of editing the source directly.
+
+```shell
+# SenseVoice
+python3 hotkey_daemon.py --model iic/SenseVoiceSmall --language auto
+
+# Fun-ASR-Nano
+python3 hotkey_daemon.py --model FunAudioLLM/Fun-ASR-Nano-2512 --language zh --hotwords "opening hours,menu"
+
+# Or pin them in your shell profile
+export SENSEVOICE_MODEL=FunAudioLLM/Fun-ASR-Nano-2512
+export SENSEVOICE_LANGUAGE=zh
+export SENSEVOICE_HOTWORDS="opening hours,menu"
+export SENSEVOICE_DEVICE=cpu
+python3 hotkey_daemon.py
+```
+
+Notes:
+
+- `--language auto` keeps the default behavior. For `Fun-ASR-Nano`, the adapter maps `zh/en/ja` to the model-specific `中文/英文/日文` prompt values.
+- `--hotwords` is currently only used by `Fun-ASR-Nano`; `SenseVoiceSmall` ignores it.
+- `--device` supports `auto/cpu/mps/cuda`. On macOS, `Fun-ASR-Nano` now defaults to `cpu` because it is typically faster than `mps` in this integration path; pass `--device mps` only if you want to override that.
+- The one-shot recording script supports the same options:
+
+```shell
+python3 transcribe_mic.py --duration 10 --model FunAudioLLM/Fun-ASR-Nano-2512 --language zh --hotwords "opening hours,menu" --device cpu
+```
+
 <a name="Usage"></a>
 # Usage
 
@@ -468,5 +509,3 @@ You can also scan the following DingTalk group QR code to join the community gro
 |                          FunASR                          |
 |:--------------------------------------------------------:|
 | <img src="image/dingding_funasr.png" width="250"/></div> |
-
-
