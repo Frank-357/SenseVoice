@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.frank.sensevoice.hotkey-daemon</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Library/Frameworks/Python.framework/Versions/3.13/bin/python3</string>
+    <string>/Users/frank/Documents/github/SenseVoice/hotkey_daemon.py</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/frank/Documents/github/SenseVoice</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>LimitLoadToSessionType</key>
+  <array>
+    <string>Aqua</string>
+  </array>
+
+  <key>StandardOutPath</key>
+  <string>/Users/frank/Library/Logs/SenseVoice/hotkey_daemon.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/frank/Library/Logs/SenseVoice/hotkey_daemon.log</string>
+
+  <key>ProcessType</key>
+  <string>Interactive</string>
+</dict>
+</plist>

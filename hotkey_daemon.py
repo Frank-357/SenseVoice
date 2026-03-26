@@ -16,11 +16,14 @@ macOS 权限：首次运行会弹出"输入监控"权限请求，在
 """
 
 import argparse
+import atexit
+import fcntl
 import os
 import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 
@@ -76,6 +79,7 @@ _keyboard_ctrl = None
 
 # ── 浮动窗口（主线程初始化，可能为 None）──────────────────────────────────────
 _widget = None
+_instance_lock_handle = None
 
 # ── 触发键集合────────────────────────────────────────────────────────────────
 TRIGGER_KEYS: set = set()
@@ -143,6 +147,42 @@ def _load_pynput() -> None:
 
 def _select_device(model_id: str, preferred_device: str | None = None) -> str:
     return select_device_for_model(model_id, preferred_device)
+
+
+def _release_instance_lock() -> None:
+    global _instance_lock_handle
+
+    if _instance_lock_handle is None:
+        return
+    try:
+        fcntl.flock(_instance_lock_handle.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        _instance_lock_handle.close()
+    except OSError:
+        pass
+    _instance_lock_handle = None
+
+
+def _acquire_instance_lock() -> None:
+    global _instance_lock_handle
+
+    lock_dir = Path.home() / "Library" / "Caches" / "SenseVoice"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / "hotkey_daemon.lock"
+
+    handle = open(lock_path, "w")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        raise RuntimeError("hotkey_daemon.py 已经在运行，拒绝启动第二个实例。")
+
+    handle.write(str(os.getpid()))
+    handle.flush()
+    _instance_lock_handle = handle
+    atexit.register(_release_instance_lock)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -440,6 +480,7 @@ def main() -> None:
     DEVICE = args.device
     TYPE_DELAY = args.type_delay
 
+    _acquire_instance_lock()
     _load_pynput()
     preferred_device = None if DEVICE in {"", "auto"} else DEVICE
     device = _select_device(MODEL_DIR, preferred_device)
